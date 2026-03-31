@@ -21,6 +21,9 @@ def main():
     parser.add_argument("--auto-approve", action="store_true", help="Auto-approve all")
     parser.add_argument("--debug", action="store_true", help="Debug logging")
     parser.add_argument("--budget", type=float, help="Daily budget in USD")
+    parser.add_argument("--local", action="store_true", help="Use local LLM (Ollama)")
+    parser.add_argument("--local-model", help="Local model name (e.g. qwen2.5:32b)")
+    parser.add_argument("--local-url", help="Local LLM API URL")
     args = parser.parse_args()
 
     if args.debug: logging.getLogger().setLevel(logging.DEBUG)
@@ -31,9 +34,17 @@ def main():
     if args.auto_approve:
         config.auto_approve_write = True; config.auto_approve_bash_destructive = True
     if args.budget: config.daily_budget_usd = args.budget
+    if args.local: config.provider = "local"
+    if args.local_model: config.local_model = args.local_model
+    if args.local_url: config.local_base_url = args.local_url
 
-    if not config.anthropic_api_key: logger.error("ANTHROPIC_API_KEY not set"); sys.exit(1)
-    if not config.telegram_token: logger.error("TELEGRAM_TOKEN not set"); sys.exit(1)
+    # Validate based on provider
+    if not config.is_local and not config.anthropic_api_key:
+        logger.error("ANTHROPIC_API_KEY not set (use COMPAGNON_PROVIDER=local for local LLM)")
+        sys.exit(1)
+    if not config.telegram_token:
+        logger.error("TELEGRAM_TOKEN not set")
+        sys.exit(1)
 
     mcp_json = os.getenv("COMPAGNON_MCP_SERVERS")
     if mcp_json:
@@ -46,7 +57,10 @@ def main():
         config.custom_instructions = open(instructions_file).read()
 
     logger.info(f"Compagnon v2 starting")
-    logger.info(f"  Model: {config.model}")
+    logger.info(f"  Provider: {config.provider}")
+    logger.info(f"  Model: {config.active_model}")
+    if config.is_local:
+        logger.info(f"  Local URL: {config.local_base_url}")
     logger.info(f"  Dir: {config.working_dir}")
     logger.info(f"  Budget: ${config.daily_budget_usd}/day")
     logger.info(f"  MCP: {list(config.mcp_servers.keys()) or 'none'}")

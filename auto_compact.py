@@ -92,8 +92,6 @@ async def compact_conversation(
     if len(messages) < 4:
         return messages, ""
 
-    client = anthropic.Anthropic(api_key=config.anthropic_api_key)
-
     # Build compact prompt
     system = COMPACT_SYSTEM_PROMPT
     if custom_instructions:
@@ -115,18 +113,27 @@ async def compact_conversation(
             clean_messages.append(msg)
 
     try:
-        response = client.messages.create(
-            model=config.model,
-            max_tokens=4096,
-            system=system,
-            messages=clean_messages,
-            temperature=0.0,
-        )
-
-        raw_summary = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                raw_summary += block.text
+        if config.is_local:
+            from local_llm import LocalLLMClient
+            client = LocalLLMClient(config.local_base_url, config.local_api_key, config.local_model)
+            response = client.create(
+                model=config.local_model, max_tokens=4096,
+                system=system, messages=clean_messages, temperature=0.0,
+            )
+            raw_summary = ""
+            for block in response.content:
+                if hasattr(block, 'text'):
+                    raw_summary += block.text
+        else:
+            client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+            response = client.messages.create(
+                model=config.model, max_tokens=4096,
+                system=system, messages=clean_messages, temperature=0.0,
+            )
+            raw_summary = ""
+            for block in response.content:
+                if hasattr(block, 'text'):
+                    raw_summary += block.text
 
         summary = format_compact_summary(raw_summary)
 

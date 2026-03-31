@@ -78,7 +78,14 @@ def calculate_cost_usd(model: str, input_tokens: int, output_tokens: int,
 
 @dataclass
 class CompagnonConfig:
+    # ── Provider: "anthropic" or "local" ──
+    provider: str = "anthropic"  # "anthropic" | "local"
     anthropic_api_key: str = ""
+    # Local LLM (Ollama, LM Studio, vLLM, llama.cpp, etc.)
+    local_base_url: str = "http://localhost:11434/v1"  # Ollama default
+    local_api_key: str = "ollama"  # Ollama doesn't need a real key
+    local_model: str = "qwen2.5:32b"  # Good tool-use model
+
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 8192
     temperature: float = 0.0
@@ -106,6 +113,14 @@ class CompagnonConfig:
     warn_at_usd: float = 8.0
     stream_update_interval: float = 1.5
 
+    @property
+    def is_local(self) -> bool:
+        return self.provider == "local"
+
+    @property
+    def active_model(self) -> str:
+        return self.local_model if self.is_local else self.model
+
     def __post_init__(self):
         if not self.memory_dir:
             self.memory_dir = str(Path(self.data_dir) / "memory")
@@ -126,6 +141,13 @@ class CompagnonConfig:
         config.memory_dir = os.getenv("COMPAGNON_MEMORY_DIR", str(Path(config.data_dir) / "memory"))
         config.session_dir = os.getenv("COMPAGNON_SESSION_DIR", str(Path(config.data_dir) / "sessions"))
         config.daily_budget_usd = float(os.getenv("COMPAGNON_DAILY_BUDGET", str(config.daily_budget_usd)))
+
+        # Local LLM provider
+        config.provider = os.getenv("COMPAGNON_PROVIDER", "anthropic" if config.anthropic_api_key else "local")
+        config.local_base_url = os.getenv("COMPAGNON_LOCAL_URL", config.local_base_url)
+        config.local_api_key = os.getenv("COMPAGNON_LOCAL_API_KEY", config.local_api_key)
+        config.local_model = os.getenv("COMPAGNON_LOCAL_MODEL", config.local_model)
+
         for d in [config.data_dir, config.memory_dir, config.session_dir]:
             Path(d).mkdir(parents=True, exist_ok=True)
         return config
