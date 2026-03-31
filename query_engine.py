@@ -15,6 +15,7 @@ from tool_registry import ToolRegistry, ToolContext, ToolResult
 from config import CompagnonConfig
 from token_tracker import TokenUsage, CostTracker
 from auto_compact import should_auto_compact, compact_conversation, estimate_token_count
+from local_llm import LocalLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,19 @@ class QueryEngine:
         self.config = config
         self.registry = registry
         self.memory_context = memory_context
-        self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
         self.cost_tracker = cost_tracker
+
+        # Dual-mode: Anthropic API or local LLM
+        if config.is_local:
+            self._local_client = LocalLLMClient(
+                base_url=config.local_base_url,
+                api_key=config.local_api_key,
+                model=config.local_model,
+            )
+            self.client = None
+        else:
+            self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+            self._local_client = None
 
     def _build_system(self, working_dir: str, task: str = "") -> str:
         names = ", ".join(self.registry.list_names())
@@ -137,34 +149,43 @@ class QueryEngine:
                 tool_uses = []
                 turn_usage = TokenUsage()
 
-                with self.client.messages.stream(
-                    model=self.config.model,
-                    max_tokens=self.config.max_tokens,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=tools if tools else anthropic.NOT_GIVEN,
-                    temperature=self.config.temperature,
-                ) as stream:
+                active_model = self.config.active_model
+
+                # Build stream context for either backend
+                if self._local_client:
+                    stream_ctx = self._local_client.stream(
+                        model=active_model,
+                        max_tokens=self.config.max_tokens,
+                        system=system_prompt,
+                        messages=messages,
+                        tools=tools if tools else None,
+                        temperature=self.config.temperature,
+                    )
+                else:
+                    stream_ctx = self.client.messages.stream(
+                        model=active_model,
+                        max_tokens=self.config.max_tokens,
+                        system=system_prompt,
+                        messages=messages,
+                        tools=tools if tools else anthropic.NOT_GIVEN,
+                        temperature=self.config.temperature,
+                    )
+
+                with stream_ctx as stream:
                     current_text = ""
                     for event in stream:
                         if event.type == "content_block_start":
                             if hasattr(event.content_block, 'text'):
                                 current_text = ""
-                            elif hasattr(event.content_block, 'type') and event.content_block.type == "tool_use":
-                                pass  # will handle in content_block_stop
 
                         elif event.type == "content_block_delta":
                             if hasattr(event.delta, 'text'):
                                 current_text += event.delta.text
                                 yield StreamEvent(type="text", text=event.delta.text)
 
-                        elif event.type == "content_block_stop":
+                        elif event.type in ("content_block_stop", "message_delta"):
                             pass
 
-                        elif event.type == "message_delta":
-                            pass
-
-                    # Get final message
                     response = stream.get_final_message()
 
                 consecutive_errors = 0
@@ -175,8 +196,8 @@ class QueryEngine:
                     total_usage.add(response.usage)
 
                 # Record cost
-                if self.cost_tracker:
-                    self.cost_tracker.record(turn_usage, self.config.model)
+                if self.cost_tracker and not self.config.is_local:
+                    self.cost_tracker.record(turn_usage, active_model)
 
                 # Process content blocks
                 assistant_content = []
